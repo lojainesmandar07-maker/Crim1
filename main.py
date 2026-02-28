@@ -5,19 +5,16 @@ import os
 from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread
+import random
 
 # ============================================
 # إعدادات الويب (لمنع البوت من التوقف على Render)
 # ============================================
 app = Flask('')
-
 @app.route('/')
-def home():
-    return "البوت يعمل بنجاح!"
+def home(): return "البوت يعمل بنجاح!"
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
-
+def run(): app.run(host='0.0.0.0', port=8080)
 def keep_alive():
     t = Thread(target=run)
     t.start()
@@ -35,146 +32,110 @@ intents.members = True
 class MysteryBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix='/', intents=intents)
-        self.active_sessions = {}  # حفظ بيانات الجلسات النشطة لكل سيرفر
+        self.active_sessions = {}
 
     async def setup_hook(self):
         await self.tree.sync()
-        print(f'✅ البوت جاهز ومسجل الدخول!')
+        print(f'✅ البوت جاهز!')
 
 bot = MysteryBot()
 
-# استيراد الملفات (لن يتم المساس بملفات البيانات الخاصة بك)
 import data.story
 import data.roles
 import data.questions
 import utils.helpers
 
-# ============================================
-# أمر بدء الفعالية
-# ============================================
-@bot.tree.command(name="start_mystery", description="بدء فعالية الجريمة (للاونر فقط)")
+@bot.tree.command(name="start_mystery", description="بدء التسجيل للفعالية")
 async def start_mystery(interaction: discord.Interaction):
     if interaction.user != interaction.guild.owner:
-        await interaction.response.send_message("❌ فقط الأونر يمكنه استخدام هذا الأمر!", ephemeral=True)
+        await interaction.response.send_message("❌ فقط الأونر يمكنه بدء الفعالية!", ephemeral=True)
         return
 
-    # إنشاء جلسة جديدة للسيرفر
     bot.active_sessions[interaction.guild.id] = {
         'players': [],
         'stage': 'registering',
-        'channel_id': interaction.channel.id # حفظ القناة لإرسال التحديثات لاحقاً
+        'channel_id': interaction.channel.id,
+        'roles': {},
+        'answers': {}
     }
 
     embed = discord.Embed(
         title="🔪 جريمة في قصر الظلال 🔪",
-        description="""
-        🏰 قصر الظلال يستقبل 10 ضيوف...
-        اللورد كرم يدعوكم لحفل عيد ميلاده، لكن الحفل سيتحول إلى جريمة قتل!
-        
-        **المطلوب:** 10 متطوعين
-        **المدة:** 45 دقيقة
-        
-        اضغط الزر أدناه للدخول
-        """,
+        description="انضموا الآن لكشف القاتل! (العدد المطلوب: 2 - 10 لاعبين)",
         color=discord.Color.dark_red()
     )
 
     class JoinButton(discord.ui.View):
-        def __init__(self, bot_instance, guild_id):
-            super().__init__(timeout=None)
-            self.bot = bot_instance
-            self.guild_id = guild_id
-
+        def __init__(self): super().__init__(timeout=None)
         @discord.ui.button(label="🔍 دخول الفعالية", style=discord.ButtonStyle.primary)
         async def join(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
-            session = self.bot.active_sessions.get(self.guild_id)
-            
-            if not session:
-                await btn_interaction.response.send_message("❌ لا توجد فعالية نشطة!", ephemeral=True)
-                return
-                
-            if len(session['players']) >= 10:
-                await btn_interaction.response.send_message("❌ العدد اكتمل!", ephemeral=True)
-                return
-                
+            session = bot.active_sessions.get(btn_interaction.guild.id)
+            if not session: return
             if btn_interaction.user.id in session['players']:
-                await btn_interaction.response.send_message("✅ أنت مسجل بالفعل!", ephemeral=True)
+                await btn_interaction.response.send_message("أنت مسجل بالفعل!", ephemeral=True)
                 return
-
-            # تسجيل اللاعب في الجلسة الأساسية
+            if len(session['players']) >= 10:
+                await btn_interaction.response.send_message("العدد مكتمل!", ephemeral=True)
+                return
+            
             session['players'].append(btn_interaction.user.id)
-            await btn_interaction.response.send_message("✅ تم تسجيلك! انتظر بدء القصة.", ephemeral=True)
-            
-            await btn_interaction.message.edit(content=f"**المسجلون: {len(session['players'])}/10**")
+            await btn_interaction.response.send_message("✅ تم تسجيلك!", ephemeral=True)
+            await btn_interaction.message.edit(content=f"**المسجلون حالياً: {len(session['players'])}**")
 
-    await interaction.response.send_message(embed=embed, view=JoinButton(bot, interaction.guild.id))
+    await interaction.response.send_message(embed=embed, view=JoinButton())
 
-# ============================================
-# أمر بدء القصة وتوزيع الأدوار
-# ============================================
-@bot.tree.command(name="begin_story", description="بدء القصة وتوزيع الأدوار")
+@bot.tree.command(name="begin_story", description="توزيع الأدوار وبدء القصة")
 async def begin_story(interaction: discord.Interaction):
-    if interaction.user != interaction.guild.owner:
-        await interaction.response.send_message("❌ فقط الأونر!", ephemeral=True)
-        return
-
     session = bot.active_sessions.get(interaction.guild.id)
-    if not session or len(session['players']) != 10:
-        # ملاحظة: يمكنك تغيير الرقم 10 أثناء التجربة لعدد أقل إذا أردت تجربة البوت وحدك
-        await interaction.response.send_message("❌ يجب أن يكتمل العدد 10 أشخاص!", ephemeral=True)
+    if not session or len(session['players']) < 2:
+        await interaction.response.send_message("❌ يجب تسجيل لاعبين اثنين على الأقل!", ephemeral=True)
         return
 
-    await interaction.response.defer()
+    await interaction.response.send_message("🏁 تبدأ اللعبة الآن... جاري توزيع الأدوار.")
+    
+    # توزيع الأدوار بذكاء
+    players_ids = session['players'].copy()
+    random.shuffle(players_ids)
+    
+    all_role_names = list(data.roles.ROLES.keys())
+    mandatory = ["المحقق ياسين", "ياسر (الإبن)"]
+    others = [r for r in all_role_names if r not in mandatory]
+    random.shuffle(others)
+    
+    chosen_roles = mandatory + others[:len(players_ids)-2]
+    random.shuffle(chosen_roles)
 
-    role_names = list(data.roles.ROLES.keys())
-    import random
-    random.shuffle(role_names)
-
-    for i, user_id in enumerate(session['players']):
+    roles_announcement = "📢 **الأدوار التي تم توزيعها في هذه الجلسة:**\n"
+    
+    for i, user_id in enumerate(players_ids):
         member = interaction.guild.get_member(user_id)
-        if member:
-            try:
-                await member.edit(nick=role_names[i])
-            except discord.Forbidden:
-                print(f"⚠️ لم أتمكن من تغيير اسم {member} (ربما لديه رتبة أعلى)")
-            
-            if 'roles' not in session:
-                session['roles'] = {}
-            session['roles'][user_id] = role_names[i]
+        role_name = chosen_roles[i]
+        session['roles'][user_id] = role_name
+        roles_announcement += f"🎭 {role_name}\n"
+        
+        # تغيير الاسم وإرسال الخاص
+        try: await member.edit(nick=role_name)
+        except: pass
+        
+        role_info = data.roles.ROLES[role_name]
+        embed = discord.Embed(title=f"🎭 دورك: {role_name}", description=role_info, color=discord.Color.blue())
+        try: await member.send(embed=embed)
+        except: pass
 
-            role_info = data.roles.ROLES[role_names[i]]
-            embed = discord.Embed(
-                title=f"🎭 دورك: {role_names[i]}",
-                description=role_info,
-                color=discord.Color.blue()
-            )
-            try:
-                await member.send(embed=embed)
-            except discord.Forbidden:
-                await interaction.followup.send(f"⚠️ {member.mention} الخاص مقفول، افتح الخاص لرؤية دورك!", ephemeral=False)
-            await asyncio.sleep(1)
+    # إعلان الأدوار وتغيير الأسماء
+    await interaction.followup.send(roles_announcement)
+    await interaction.followup.send("✅ تم تغيير أسمائكم مؤقتاً لتناسب الشخصيات. تفاصيل أدواركم وأسراركم وصلتكم في الخاص! 🤫")
 
-    session['stage'] = 'story_started'
-    session['current_round'] = 1
-    session['answers'] = {}
-
-    story_embed = discord.Embed(
-        title="🏰 بداية القصة",
-        description=data.story.STORY,
-        color=discord.Color.gold()
-    )
+    # سرد القصة
+    story_embed = discord.Embed(title="🏰 بداية القصة", description=data.story.STORY, color=discord.Color.gold())
     await interaction.followup.send(embed=story_embed)
-
+    
     await asyncio.sleep(5)
     await interaction.followup.send(data.story.INITIAL_STATEMENTS)
-
+    
     await asyncio.sleep(5)
-    # نمرر رقم السيرفر (guild_id) بدلاً من interaction لتجنب مشاكل الرسائل الخاصة
     await utils.helpers.start_round(bot, interaction.guild.id, 1)
 
-# ============================================
-# تشغيل البوت
-# ============================================
 if __name__ == "__main__":
-    keep_alive() # تشغيل خادم الويب
+    keep_alive()
     bot.run(TOKEN)
