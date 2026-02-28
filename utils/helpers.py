@@ -11,7 +11,6 @@ async def start_round(bot, guild_id, round_num):
     session = bot.active_sessions.get(guild_id)
     if not session: return
     
-    # جلب القناة التي بدأت فيها اللعبة
     channel = bot.get_channel(session['channel_id'])
     guild = bot.get_guild(guild_id)
     
@@ -41,6 +40,8 @@ async def send_questions_to_detective(bot, guild_id, detective: discord.Member, 
         def __init__(self):
             super().__init__(timeout=120)
             self.selected = []
+            self.guild_id = guild_id
+            self.bot = bot
 
         @discord.ui.button(label=q_list[0][:80], style=discord.ButtonStyle.primary)
         async def q1(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
@@ -66,8 +67,7 @@ async def send_questions_to_detective(bot, guild_id, detective: discord.Member, 
             await btn_interaction.response.send_message(f"✅ تم اختيار: {question}", ephemeral=True)
             
             if len(self.selected) == 2:
-                # بمجرد اختيار سؤالين، نرسلها للمشتبه بهم
-                await ask_all_suspects(bot, guild_id, self.selected, round_num)
+                await ask_all_suspects(self.bot, self.guild_id, self.selected, round_num)
 
     await detective.send("🕵️ **اختر سؤالين لهذه الجولة:**", view=QuestionSelectView())
 
@@ -93,7 +93,7 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
 
         view = AnswersView()
 
-        # إضافة زر لكل مشتبه به موجود في الجلسة (ما عدا المحقق)
+        # إضافة زر لكل مشتبه به
         for user_id, role in session['roles'].items():
             if role.startswith("المحقق"):
                 continue
@@ -101,10 +101,8 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
             if not member:
                 continue
 
-            # استخراج اسم الشخصية (بدون تفاصيل)
             role_name = role.split(' (')[0] if ' (' in role else role
 
-            # إنشاء زر لكل شخصية
             button = discord.ui.Button(
                 label=f"👤 {role_name}",
                 style=discord.ButtonStyle.secondary,
@@ -115,23 +113,19 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
                                      u_id=user_id, 
                                      u_role=role, 
                                      question=q):
-                # التحقق من أن الشخص يجاوب عن نفسه
                 if btn_interaction.user.id != u_id:
                     await btn_interaction.response.send_message("❌ هذا الزر ليس لك!", ephemeral=True)
                     return
 
-                # جلب خيارات هذا الشخص لهذا السؤال
                 role_answers = questions.ANSWERS.get(u_role, {})
                 options = role_answers.get(question, ["لا يوجد إجابة متاحة"])
 
-                # إنشاء View لاختيار الإجابة
                 class OptionView(discord.ui.View):
                     def __init__(self):
                         super().__init__(timeout=30)
 
                 option_view = OptionView()
 
-                # إضافة أزرار الخيارات (4 خيارات كحد أقصى)
                 for i, opt in enumerate(options[:4]):
                     opt_button = discord.ui.Button(
                         label=opt[:80],
@@ -143,12 +137,10 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
                                           opt_val=opt, 
                                           u_id_val=u_id, 
                                           q_val=question):
-                        # حفظ الإجابة
                         if u_id_val not in session['answers'][round_num]:
                             session['answers'][round_num][u_id_val] = {}
                         session['answers'][round_num][u_id_val][q_val] = opt_val
 
-                        # نشر الإجابة في القناة العامة
                         member_name = guild.get_member(u_id_val).display_name
                         role_name_display = u_role.split(' (')[0] if ' (' in u_role else u_role
                         await channel.send(f"✅ **{role_name_display}:** {opt_val}")
@@ -163,18 +155,16 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
             button.callback = button_callback
             view.add_item(button)
 
-        # نشر السؤال في القناة العامة مع الأزرار
         await channel.send(f"❓ **{q}**", view=view)
-        await asyncio.sleep(20)  # انتظار 20 ثانية للإجابات
+        await asyncio.sleep(20)
 
-    # انتظار قليل ثم إرسال التقرير والمعلومات السرية
     await channel.send("⏳ جاري تحليل الإجابات...")
     await asyncio.sleep(5)
     await send_round_report(bot, guild_id, round_num)
     await send_hidden_info_to_all(bot, guild_id, round_num)
 
 # ============================================
-# إرسال المعلومات السرية (تبقى كما هي)
+# باقي الدوال (كما هي دون تغيير)
 # ============================================
 async def send_hidden_info_to_all(bot, guild_id, round_num):
     session = bot.active_sessions.get(guild_id)
@@ -230,9 +220,6 @@ async def send_hidden_info_to_all(bot, guild_id, round_num):
                 pass
             await asyncio.sleep(1)
 
-# ============================================
-# التقرير المرحلي
-# ============================================
 async def send_round_report(bot, guild_id, round_num):
     session = bot.active_sessions.get(guild_id)
     if not session: return
@@ -270,9 +257,6 @@ async def send_round_report(bot, guild_id, round_num):
         await asyncio.sleep(5)
         await start_round(bot, guild_id, next_round)
 
-# ============================================
-# التقرير النهائي
-# ============================================
 async def send_final_report(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
     if not session: return
@@ -321,9 +305,6 @@ async def send_final_report(bot, guild_id):
 
     await start_voting(bot, guild_id)
 
-# ============================================
-# التصويت الديناميكي (يظهر فقط الشخصيات الموجودة)
-# ============================================
 async def start_voting(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
     if not session: return
@@ -337,7 +318,6 @@ async def start_voting(bot, guild_id):
 
     view = VoteView()
 
-    # إضافة أزرار فقط للشخصيات الموجودة (ما عدا المحقق)
     for user_id, role in session['roles'].items():
         if role.startswith("المحقق"):
             continue
@@ -366,15 +346,11 @@ async def start_voting(bot, guild_id):
     await asyncio.sleep(120)
     await show_vote_result(bot, guild_id)
 
-# ============================================
-# عرض نتيجة التصويت وكشف القاتل
-# ============================================
 async def show_vote_result(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
     if not session: return
     channel = bot.get_channel(session['channel_id'])
 
-    # النتيجة الثابتة (ياسر هو القاتل دائماً)
     result_message = """
 🥁 **انتهى التصويت!**
 
@@ -390,6 +366,5 @@ async def show_vote_result(bot, guild_id):
 """
     await channel.send(result_message)
     
-    # تنظيف الجلسة (اختياري)
     if guild_id in bot.active_sessions:
         del bot.active_sessions[1461084670279159860]
