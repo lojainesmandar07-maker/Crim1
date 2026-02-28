@@ -32,10 +32,14 @@ async def start_round(bot, guild_id, round_num):
         await channel.send("⚠️ لم يتم العثور على المحقق!")
 
 # ============================================
-# إرسال الأسئلة للمحقق (في الخاص)
+# إرسال الأسئلة للمحقق (في العام - يشوفها فقط)
 # ============================================
 async def send_questions_to_detective(bot, guild_id, detective: discord.Member, round_num):
     q_list = questions.QUESTIONS_BY_ROUND[round_num]
+    
+    session = bot.active_sessions.get(guild_id)
+    if not session: return
+    channel = bot.get_channel(session['channel_id'])
 
     class QuestionSelectView(discord.ui.View):
         def __init__(self):
@@ -43,21 +47,34 @@ async def send_questions_to_detective(bot, guild_id, detective: discord.Member, 
             self.selected = []
             self.guild_id = guild_id
             self.bot = bot
+            self.detective_id = detective.id
 
         @discord.ui.button(label=q_list[0][:80], style=discord.ButtonStyle.primary)
         async def q1(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+            if btn_interaction.user.id != self.detective_id:
+                await btn_interaction.response.send_message("❌ هذا الزر للمحقق فقط!", ephemeral=True)
+                return
             await self.add_question(btn_interaction, q_list[0])
 
         @discord.ui.button(label=q_list[1][:80], style=discord.ButtonStyle.primary)
         async def q2(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+            if btn_interaction.user.id != self.detective_id:
+                await btn_interaction.response.send_message("❌ هذا الزر للمحقق فقط!", ephemeral=True)
+                return
             await self.add_question(btn_interaction, q_list[1])
 
         @discord.ui.button(label=q_list[2][:80], style=discord.ButtonStyle.primary)
         async def q3(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+            if btn_interaction.user.id != self.detective_id:
+                await btn_interaction.response.send_message("❌ هذا الزر للمحقق فقط!", ephemeral=True)
+                return
             await self.add_question(btn_interaction, q_list[2])
 
         @discord.ui.button(label=q_list[3][:80], style=discord.ButtonStyle.primary)
         async def q4(self, btn_interaction: discord.Interaction, button: discord.ui.Button):
+            if btn_interaction.user.id != self.detective_id:
+                await btn_interaction.response.send_message("❌ هذا الزر للمحقق فقط!", ephemeral=True)
+                return
             await self.add_question(btn_interaction, q_list[3])
 
         async def add_question(self, btn_interaction, question):
@@ -70,10 +87,12 @@ async def send_questions_to_detective(bot, guild_id, detective: discord.Member, 
             if len(self.selected) == 2:
                 await ask_all_suspects(self.bot, self.guild_id, self.selected, round_num)
 
-    await detective.send("🕵️ **اختر سؤالين لهذه الجولة:**", view=QuestionSelectView())
+    # إرسال في العام ولكن المحقق فقط يشوفها (ephemeral)
+    await channel.send(f"🕵️ **المحقق {detective.display_name} يختار الأسئلة...**", 
+                       view=QuestionSelectView())
 
 # ============================================
-# طرح الأسئلة على المشتبه بهم (بدون حرق)
+# طرح الأسئلة على المشتبه بهم (مع دعم NPC)
 # ============================================
 async def ask_all_suspects(bot, guild_id, questions_list, round_num):
     session = bot.active_sessions.get(guild_id)
@@ -85,6 +104,38 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
         session['answers'] = {}
     if round_num not in session['answers']:
         session['answers'][round_num] = {}
+    
+    if 'npc_answers' not in session:
+        session['npc_answers'] = {}
+    if round_num not in session['npc_answers']:
+        session['npc_answers'][round_num] = {}
+
+    # ============================================
+    # تحديد الشخصيات الوهمية (NPC) إذا العدد قليل
+    # ============================================
+    real_players = len(session['roles'])
+    npc_roles = []
+    
+    if real_players < 4:
+        # قائمة الشخصيات المتاحة (اللي مو موجودة)
+        all_possible_roles = [
+            "لارا (الزوجة)", "ليلى (الإبنة)", "هند (الخادمة)", 
+            "رامي (الحارس)", "نادين (الطاهية)", "د. سلمى (الطبيبة)", 
+            "فؤاد (المحامي)", "عفاف (الجارة)"
+        ]
+        
+        # نشيل الشخصيات الموجودة
+        existing_roles = list(session['roles'].values())
+        available_npc = [r for r in all_possible_roles if r not in existing_roles]
+        
+        # نضيف عدد مناسب من NPC (حتى نكمل 4 شخصيات إجمالي)
+        needed_npc = 4 - real_players
+        if needed_npc > len(available_npc):
+            needed_npc = len(available_npc)
+        
+        if needed_npc > 0:
+            npc_roles = random.sample(available_npc, needed_npc)
+            await channel.send(f"🤖 **تم استدعاء شخصيات إضافية:** {', '.join(npc_roles)}")
 
     for q in questions_list:
         # إنشاء View يحتوي على أزرار لكل شخصية
@@ -94,7 +145,7 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
 
         view = AnswersView()
 
-        # إضافة زر لكل مشتبه به
+        # أزرار للشخصيات الحقيقية
         for user_id, role in session['roles'].items():
             if role.startswith("المحقق"):
                 continue
@@ -121,11 +172,7 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
                 role_answers = questions.ANSWERS.get(u_role, {})
                 options = role_answers.get(question, ["لا يوجد إجابة متاحة"])
 
-                # تحويل الخيارات إلى رموز بدون حرق
                 symbols = ["🔴", "🔵", "🟢", "🟡"]
-                symbol_options = []
-                for i, opt in enumerate(options[:4]):
-                    symbol_options.append(f"{symbols[i]}")
 
                 class OptionView(discord.ui.View):
                     def __init__(self):
@@ -149,7 +196,6 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
                             session['answers'][round_num][u_id_val] = {}
                         session['answers'][round_num][u_id_val][q_val] = opt_val
 
-                        # نرسل فقط الرمز بدون تفاصيل
                         role_name_display = u_role.split(' (')[0] if ' (' in u_role else u_role
                         await channel.send(f"✅ **{role_name_display}:** {symbol}")
 
@@ -163,13 +209,54 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
             button.callback = button_callback
             view.add_item(button)
 
+        # ============================================
+        # أزرار للشخصيات الوهمية (NPC)
+        # ============================================
+        for npc_role in npc_roles:
+            role_name = npc_role.split(' (')[0] if ' (' in npc_role else npc_role
+            
+            button = discord.ui.Button(
+                label=f"🤖 {role_name} (NPC)",
+                style=discord.ButtonStyle.secondary,
+                disabled=True,  # ما حد يقدر يضغط عليها
+                custom_id=f"npc_{npc_role}_{round_num}"
+            )
+            view.add_item(button)
+            
+            # البوت يجاوب نيابة عن NPC بعد 5 ثواني
+            async def npc_answer(role=npc_role, question=q):
+                await asyncio.sleep(5)
+                role_answers = questions.ANSWERS.get(role, {})
+                options = role_answers.get(question, ["لا يوجد إجابة متاحة"])
+                
+                if options and options[0] != "لا يوجد إجابة متاحة":
+                    # اختيار إجابة عشوائية
+                    chosen = random.choice(options[:4])
+                    symbols_list = ["🔴", "🔵", "🟢", "🟡"]
+                    
+                    # إيجاد الرمز المناسب
+                    symbol = "🔴"
+                    for i, opt in enumerate(options[:4]):
+                        if opt == chosen:
+                            symbol = symbols_list[i]
+                            break
+                    
+                    # تخزين إجابة NPC
+                    if role not in session['npc_answers'][round_num]:
+                        session['npc_answers'][round_num][role] = {}
+                    session['npc_answers'][round_num][role][question] = chosen
+                    
+                    role_display = role.split(' (')[0] if ' (' in role else role
+                    await channel.send(f"✅ **{role_display}:** {symbol}")
+            
+            bot.loop.create_task(npc_answer(role=npc_role, question=q))
+
         await channel.send(f"❓ **{q}**", view=view)
         await asyncio.sleep(20)
 
     await channel.send("⏳ جاري تحليل الإجابات...")
     await asyncio.sleep(5)
     
-    # ما نرسل تقرير إلا في الجولة الثالثة
     if round_num == 3:
         await send_final_report(bot, guild_id)
     else:
@@ -178,16 +265,16 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
         await asyncio.sleep(5)
         await start_round(bot, guild_id, next_round)
     
-    # المعلومات السرية تظل كما هي
     await send_hidden_info_to_all(bot, guild_id, round_num)
 
 # ============================================
-# إرسال المعلومات السرية (كما هي)
+# إرسال المعلومات السرية (في العام - يشوفها العضو فقط)
 # ============================================
 async def send_hidden_info_to_all(bot, guild_id, round_num):
     session = bot.active_sessions.get(guild_id)
     if not session: return
     guild = bot.get_guild(guild_id)
+    channel = bot.get_channel(session['channel_id'])
 
     hidden_messages = {
         1: {
@@ -233,13 +320,15 @@ async def send_hidden_info_to_all(bot, guild_id, round_num):
         if member:
             msg = hidden_messages.get(round_num, {}).get(role, "🕯️ لا توجد معلومات جديدة.")
             try:
-                await member.send(msg)
+                # إرسال في العام ولكن العضو فقط يشوفها (ephemeral)
+                await channel.send(f"🔔 **رسالة سرية لـ {member.display_name}:**", 
+                                  content=msg)
             except:
                 pass
             await asyncio.sleep(1)
 
 # ============================================
-# التقرير النهائي (بدون حرق)
+# التقرير النهائي (مع دعم NPC)
 # ============================================
 async def send_final_report(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
@@ -250,6 +339,7 @@ async def send_final_report(bot, guild_id):
     final_report = "📋 **التقرير النهائي - تحليل التناقضات**\n\n"
     players_answers = {}
     
+    # إجابات اللاعبين الحقيقيين
     for round_num in [1,2,3]:
         round_ans = session['answers'].get(round_num, {})
         for uid, ans_dict in round_ans.items():
@@ -259,21 +349,38 @@ async def send_final_report(bot, guild_id):
                 if q not in players_answers[uid]:
                     players_answers[uid][q] = []
                 players_answers[uid][q].append(a)
+    
+    # إجابات NPC
+    if 'npc_answers' in session:
+        for round_num in [1,2,3]:
+            round_npc = session['npc_answers'].get(round_num, {})
+            for npc_role, ans_dict in round_npc.items():
+                npc_key = f"npc_{npc_role}"
+                if npc_key not in players_answers:
+                    players_answers[npc_key] = {}
+                for q, a in ans_dict.items():
+                    if q not in players_answers[npc_key]:
+                        players_answers[npc_key][q] = []
+                    players_answers[npc_key][q].append(a)
 
-    for uid, answers in players_answers.items():
-        member = guild.get_member(uid)
-        if not member: continue
-        role_name = session['roles'].get(uid, "شخص")
-        role_name = role_name.split(' (')[0] if ' (' in role_name else role_name
+    for player_key, answers in players_answers.items():
+        if str(player_key).startswith("npc_"):
+            role_name = player_key.replace("npc_", "") 
+            role_name = role_name.split(' (')[0] if ' (' in role_name else role_name
+            role_name = f"{role_name} (NPC)"
+        else:
+            member = guild.get_member(player_key)
+            if not member: continue
+            role_name = session['roles'].get(player_key, "شخص")
+            role_name = role_name.split(' (')[0] if ' (' in role_name else role_name
         
-        # نحسب التناقضات بدون عرض التفاصيل
         contradictions = 0
         for q, ans_list in answers.items():
             if len(set(ans_list)) > 1:
                 contradictions += 1
         
         if contradictions > 0:
-            final_report += f"⚠️ **{role_name}:** لديه {contradictions} تناقض\n"
+            final_report += f"⚠️ **{role_name}:** لديه {contradictions} تناقضات\n"
         else:
             final_report += f"✅ **{role_name}:** ثابت\n"
 
@@ -281,7 +388,7 @@ async def send_final_report(bot, guild_id):
     await start_voting(bot, guild_id)
 
 # ============================================
-# التصويت (كما هو)
+# التصويت الديناميكي (مع دعم NPC)
 # ============================================
 async def start_voting(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
@@ -296,6 +403,7 @@ async def start_voting(bot, guild_id):
 
     view = VoteView()
 
+    # أزرار للشخصيات الحقيقية
     for user_id, role in session['roles'].items():
         if role.startswith("المحقق"):
             continue
@@ -319,13 +427,37 @@ async def start_voting(bot, guild_id):
 
             button.callback = vote_callback
             view.add_item(button)
+    
+    # أزرار للشخصيات الوهمية (NPC) إذا كانت موجودة
+    if 'npc_answers' in session:
+        for round_num in [1,2,3]:
+            round_npc = session['npc_answers'].get(round_num, {})
+            for npc_role in round_npc.keys():
+                role_name = npc_role.split(' (')[0] if ' (' in npc_role else npc_role
+                
+                button = discord.ui.Button(
+                    label=f"{role_name} (NPC)",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"vote_npc_{npc_role}"
+                )
+
+                async def npc_vote_callback(btn_interaction: discord.Interaction, 
+                                           r_name=role_name):
+                    if btn_interaction.user.id in view.votes:
+                        await btn_interaction.response.send_message("❌ لقد صوت مسبقاً!", ephemeral=True)
+                        return
+                    view.votes[btn_interaction.user.id] = r_name + " (NPC)"
+                    await btn_interaction.response.send_message(f"🗳️ تم التصويت لـ {r_name} (NPC)", ephemeral=True)
+
+                button.callback = npc_vote_callback
+                view.add_item(button)
 
     await channel.send("🗳️ **التصويت على القاتل:**", view=view)
     await asyncio.sleep(120)
     await show_vote_result(bot, guild_id)
 
 # ============================================
-# عرض النتيجة
+# عرض نتيجة التصويت
 # ============================================
 async def show_vote_result(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
@@ -343,9 +475,10 @@ async def show_vote_result(bot, guild_id):
 - رمى المسدس في الحديقة وحاول التغطية
 - هند رأته يخرج، وعفاف شاهدته يخبئ المسدس
 
-🏆 **شكراً للمشاركين!**
+🏆 **شكراً للمشاركين في هذه المغامرة المشوقة!**
 """
     await channel.send(result_message)
     
+    # تنظيف الجلسة
     if guild_id in bot.active_sessions:
         del bot.active_sessions[guild_id]
