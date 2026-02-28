@@ -3,6 +3,7 @@ import asyncio
 import data.questions as questions
 import data.story as story
 import data.roles as roles
+import random
 
 # ============================================
 # بدء الجولة
@@ -72,7 +73,7 @@ async def send_questions_to_detective(bot, guild_id, detective: discord.Member, 
     await detective.send("🕵️ **اختر سؤالين لهذه الجولة:**", view=QuestionSelectView())
 
 # ============================================
-# طرح الأسئلة على المشتبه بهم (في العام مع أزرار)
+# طرح الأسئلة على المشتبه بهم (بدون حرق)
 # ============================================
 async def ask_all_suspects(bot, guild_id, questions_list, round_num):
     session = bot.active_sessions.get(guild_id)
@@ -120,6 +121,12 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
                 role_answers = questions.ANSWERS.get(u_role, {})
                 options = role_answers.get(question, ["لا يوجد إجابة متاحة"])
 
+                # تحويل الخيارات إلى رموز بدون حرق
+                symbols = ["🔴", "🔵", "🟢", "🟡"]
+                symbol_options = []
+                for i, opt in enumerate(options[:4]):
+                    symbol_options.append(f"{symbols[i]}")
+
                 class OptionView(discord.ui.View):
                     def __init__(self):
                         super().__init__(timeout=30)
@@ -128,7 +135,7 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
 
                 for i, opt in enumerate(options[:4]):
                     opt_button = discord.ui.Button(
-                        label=opt[:80],
+                        label=symbols[i],
                         style=discord.ButtonStyle.primary,
                         custom_id=f"opt_{u_id}_{i}"
                     )
@@ -136,14 +143,15 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
                     async def opt_callback(opt_interaction: discord.Interaction, 
                                           opt_val=opt, 
                                           u_id_val=u_id, 
-                                          q_val=question):
+                                          q_val=question,
+                                          symbol=symbols[i]):
                         if u_id_val not in session['answers'][round_num]:
                             session['answers'][round_num][u_id_val] = {}
                         session['answers'][round_num][u_id_val][q_val] = opt_val
 
-                        member_name = guild.get_member(u_id_val).display_name
+                        # نرسل فقط الرمز بدون تفاصيل
                         role_name_display = u_role.split(' (')[0] if ' (' in u_role else u_role
-                        await channel.send(f"✅ **{role_name_display}:** {opt_val}")
+                        await channel.send(f"✅ **{role_name_display}:** {symbol}")
 
                         await opt_interaction.response.send_message("✅ تم تسجيل إجابتك!", ephemeral=True)
 
@@ -160,11 +168,21 @@ async def ask_all_suspects(bot, guild_id, questions_list, round_num):
 
     await channel.send("⏳ جاري تحليل الإجابات...")
     await asyncio.sleep(5)
-    await send_round_report(bot, guild_id, round_num)
+    
+    # ما نرسل تقرير إلا في الجولة الثالثة
+    if round_num == 3:
+        await send_final_report(bot, guild_id)
+    else:
+        next_round = round_num + 1
+        session['current_round'] = next_round
+        await asyncio.sleep(5)
+        await start_round(bot, guild_id, next_round)
+    
+    # المعلومات السرية تظل كما هي
     await send_hidden_info_to_all(bot, guild_id, round_num)
 
 # ============================================
-# باقي الدوال (كما هي دون تغيير)
+# إرسال المعلومات السرية (كما هي)
 # ============================================
 async def send_hidden_info_to_all(bot, guild_id, round_num):
     session = bot.active_sessions.get(guild_id)
@@ -220,51 +238,18 @@ async def send_hidden_info_to_all(bot, guild_id, round_num):
                 pass
             await asyncio.sleep(1)
 
-async def send_round_report(bot, guild_id, round_num):
-    session = bot.active_sessions.get(guild_id)
-    if not session: return
-    channel = bot.get_channel(session['channel_id'])
-    guild = bot.get_guild(guild_id)
-
-    round_answers = session['answers'].get(round_num, {})
-    if not round_answers:
-        await channel.send("📊 لا توجد إجابات مسجلة لهذه الجولة.")
-    else:
-        report = f"📋 **تقرير الجولة {round_num}**\n\n"
-        for user_id, ans_dict in round_answers.items():
-            member = guild.get_member(user_id)
-            name = member.display_name if member else "شخص"
-            role_name = session['roles'].get(user_id, "غير معروف")
-            role_name = role_name.split(' (')[0] if ' (' in role_name else role_name
-            report += f"**{role_name}:**\n"
-            for q, a in ans_dict.items():
-                short_q = q[:30] + "..." if len(q) > 30 else q
-                report += f"> {short_q}\n> {a}\n\n"
-                
-        if len(report) > 2000:
-            part1 = report[:2000]
-            part2 = report[2000:]
-            await channel.send(part1)
-            await channel.send(part2)
-        else:
-            await channel.send(report)
-
-    if round_num == 3:
-        await send_final_report(bot, guild_id)
-    else:
-        next_round = round_num + 1
-        session['current_round'] = next_round
-        await asyncio.sleep(5)
-        await start_round(bot, guild_id, next_round)
-
+# ============================================
+# التقرير النهائي (بدون حرق)
+# ============================================
 async def send_final_report(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
     if not session: return
     channel = bot.get_channel(session['channel_id'])
     guild = bot.get_guild(guild_id)
 
-    final_report = "📋 **التقرير النهائي - مقارنة الإجابات**\n\n"
+    final_report = "📋 **التقرير النهائي - تحليل التناقضات**\n\n"
     players_answers = {}
+    
     for round_num in [1,2,3]:
         round_ans = session['answers'].get(round_num, {})
         for uid, ans_dict in round_ans.items():
@@ -280,31 +265,24 @@ async def send_final_report(bot, guild_id):
         if not member: continue
         role_name = session['roles'].get(uid, "شخص")
         role_name = role_name.split(' (')[0] if ' (' in role_name else role_name
-        final_report += f"**{role_name}:**\n"
+        
+        # نحسب التناقضات بدون عرض التفاصيل
         contradictions = 0
         for q, ans_list in answers.items():
-            short_q = q[:30] + "..." if len(q) > 30 else q
-            final_report += f"> {short_q} : "
             if len(set(ans_list)) > 1:
-                unique_ans = list(set(ans_list))
-                final_report += f"⚠️ تناقض! (قال: {unique_ans[0][:30]} ثم {unique_ans[1][:30]})\n"
                 contradictions += 1
-            else:
-                final_report += f"✅ ثابت: {ans_list[0][:50]}\n"
+        
         if contradictions > 0:
-            final_report += f"🔴 عدد التناقضات: {contradictions}\n\n"
+            final_report += f"⚠️ **{role_name}:** لديه {contradictions} تناقض\n"
         else:
-            final_report += "🟢 لا تناقضات\n\n"
+            final_report += f"✅ **{role_name}:** ثابت\n"
 
-    if len(final_report) > 2000:
-        await channel.send(final_report[:2000])
-        await asyncio.sleep(1)
-        await channel.send(final_report[2000:])
-    else:
-        await channel.send(final_report)
-
+    await channel.send(final_report)
     await start_voting(bot, guild_id)
 
+# ============================================
+# التصويت (كما هو)
+# ============================================
 async def start_voting(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
     if not session: return
@@ -346,6 +324,9 @@ async def start_voting(bot, guild_id):
     await asyncio.sleep(120)
     await show_vote_result(bot, guild_id)
 
+# ============================================
+# عرض النتيجة
+# ============================================
 async def show_vote_result(bot, guild_id):
     session = bot.active_sessions.get(guild_id)
     if not session: return
@@ -362,9 +343,9 @@ async def show_vote_result(bot, guild_id):
 - رمى المسدس في الحديقة وحاول التغطية
 - هند رأته يخرج، وعفاف شاهدته يخبئ المسدس
 
-🏆 **شكراً للمشاركين في هذه المغامرة المشوقة!**
+🏆 **شكراً للمشاركين!**
 """
     await channel.send(result_message)
     
     if guild_id in bot.active_sessions:
-        del bot.active_sessions[1461084670279159860]
+        del bot.active_sessions[guild_id]
